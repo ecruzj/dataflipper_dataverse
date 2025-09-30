@@ -1,0 +1,17 @@
+cd C:\build_data_flipper
+python -m venv buildenv
+buildenv\Scripts\activate
+pip install -r requirements.txt
+pip install pyinstaller
+
+
+pyinstaller ^
+--noconfirm ^
+--onefile ^
+--windowed ^
+--icon=resources\data_flipper_icon.ico ^
+--add-data "ui\main_window.ui;ui" ^
+main.py
+
+--generate a .py file from .ui file
+pyside6-uic ui/main_window.ui -o ui/main_window.py
