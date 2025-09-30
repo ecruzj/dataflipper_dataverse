@@ -1,0 +1,39 @@
+# ---- Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.dylib
+*.egg-info/
+*.egg
+.pytest_cache/
+
+# ---- Virtual envs / local tooling
+.venv/
+venv/
+buildenv/
+
+# ---- App outputs
+dist/
+build/
+downloads/
+output/
+logs/
+
+# ---- PyInstaller
+*.spec
+
+# ---- OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ---- Secrets
+.env
+*.env
+
+# ---- Archives / temp
+*.zip
+*.tar.gz
+*.rar
