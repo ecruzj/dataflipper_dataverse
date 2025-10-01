@@ -12,6 +12,13 @@ from PySide6.QtGui import QIcon
 from ui.main_window import Ui_MainWindow
 from worker_thread import WorkerThread
 
+try:
+    from common.build_info import FULL_VERSION, APP_VERSION, BUILD_NUMBER, GIT_SHA
+except Exception:
+    # fallback if you run without a previous build step
+    from common.version import APP_VERSION
+    FULL_VERSION, BUILD_NUMBER, GIT_SHA = f"{APP_VERSION}+dev", 0, "nogit"
+
 def resource_path(relative_path):
     """
     Get the path to a resource. If frozen, this will be from the _MEIPASS directory.
@@ -36,6 +43,7 @@ class MainWindow(QMainWindow):
         setup_logging(app_name="dataverse_apis")  # Logging setup
         log = get_logger(__name__)
         log.info("Application started")
+        log.info(f"App version: {APP_VERSION}  Build: {BUILD_NUMBER}  Git: {GIT_SHA}")
         
         # INCIDENTS
         # ticket_number = "CAS-106375-K4P3H"
@@ -51,7 +59,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
-        self.setWindowTitle("Data Flipper with Dataverse APIs")
+        self.setWindowTitle(f"Data Flipper with Dataverse APIs — v{FULL_VERSION}")
         self.setWindowIcon(QIcon(resource_path("resources/data_flipper_icon.ico")))
         self.ui.txtOutput.setReadOnly(True)
         self.ui.lblStatus.setText("")

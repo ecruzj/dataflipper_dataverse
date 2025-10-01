@@ -1,0 +1,6 @@
+# Auto-generated at build time. DO NOT COMMIT.
+APP_VERSION = "2.5.6"
+BUILD_NUMBER = 5
+GIT_SHA = "c0fa8a0"
+BUILD_DATE = "2025-10-01T16:18:50Z"
+FULL_VERSION = "2.5.6+5.c0fa8a0"
