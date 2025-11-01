@@ -7,8 +7,10 @@ import sys
 from shutil import which
 from ...services.runtime_paths import resolve_runtime_path
 from ...logging.logging_conf import get_logger
+from ..web_helper.browser import make_brave_driver
 from pathlib import Path
 from selenium import webdriver
+from selenium.common.exceptions import WebDriverException 
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.edge.service import Service as EdgeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
@@ -29,7 +31,7 @@ APP_NAME = "DataFlipper"
 
 def _get_writable_base_dir() -> Path:
     """Returns a writable folder to store downloads folder:
-    - EXE: folder for the .exe; if not allowed, it falls to %LOCALAPPDATA%\<APP_NAME>
+    - EXE: folder for the .exe; if not allowed, it falls to %LOCALAPPDATA%\\<APP_NAME>
     - Dev: cwd
     """
     if getattr(sys, "frozen", False):
@@ -75,14 +77,21 @@ def setup_driver(download_folder):
     if brave_exists():
         print("Brave detected. Using Brave browser...")
         log.info("Brave detected. Using Brave browser...")
-        options = ChromeOptions()
-        options.binary_location = brave_path
-        options.add_argument("--start-maximized")
-        options.add_experimental_option("prefs", prefs)
-        
-        chromedriver_path = _resolve_driver("chromedriver.exe")
-        service = ChromeService(chromedriver_path)
-        return webdriver.Chrome(service=service, options=options)
+
+        # Delegate to make_brave_driver to align the ChromeDriver to Brave/Chromium
+        try:
+            driver = make_brave_driver(download_dir=Path(download_folder), brave_path=brave_path)
+            return driver
+        except WebDriverException as e:
+            msg = (
+                "[Browser Check] Brave could not be started with Selenium.\n"
+                f"Details: {e}\n"
+                "It's usually due to a Brave/Chromedriver mismatch. "
+                "Update Brave or let the app download the correct driver (recommended)."
+            )
+            print(msg)
+            log.error(msg)
+            raise
     else:
         print("Using Microsoft Edge...")
         log.info("Using Microsoft Edge...")
@@ -130,7 +139,7 @@ def click_download_button(driver):
             print(f"Failed to click Download button: {e}")
             log.error(f"Failed to click Download button: {e}")
 
-def wait_for_download(download_dir: str,
+def wait_for_download(download_dir: Path | str,
                     stable_for: float = 8.0,
                     poll: float = 1.0,
                     partial_exts=(".crdownload", ".part", ".tmp")) -> str:
@@ -187,7 +196,7 @@ def wait_for_download(download_dir: str,
                         return str(nz.resolve())
         time.sleep(poll)
 
-def ensure_unique_path(path: str) -> Path:
+def ensure_unique_path(path: Path | str) -> Path:
     """If 'path' exists, returns 'path' with suffixes (2), (3), ... until it does not exist."""
     path = Path(path) # Ensure it's a Path object
     if not path.exists():

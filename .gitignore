@@ -20,6 +20,13 @@ downloads/
 output/
 logs/
 
+# ---- Build generated metadata ----
+common/build_info.py
+common/version_info.txt
+
+# ---- Sample / Test files ----
+test excel/
+
 # ---- PyInstaller
 *.spec
 

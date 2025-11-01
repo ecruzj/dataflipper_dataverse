@@ -1,5 +1,7 @@
 @echo off
 setlocal ENABLEDELAYEDEXPANSION
+title Building DataFlipper...
+color 0A
 
 REM ============================================================
 REM  Data Flipper build script
@@ -39,9 +41,16 @@ git fetch --tags 2>nul
 
 echo.
 echo === [3/5] Generate version file ===
+set "VER=common\version_info.txt"
 REM *** IMPORTANT: this line generates common\build_info.py before building ***
 python common\write_build_info.py
 if errorlevel 1 goto :error
+
+REM *** Generate version_info.txt (from build_info) ***
+python common\write_version_info.py
+if errorlevel 1 goto :error
+
+if not exist "%VER%"  echo [ERROR] Missing %VER%  & goto :error
 
 echo.
 echo === [4/5] PyInstaller build ===
@@ -76,6 +85,8 @@ REM (optional) Deactivate venv
 call buildenv\Scripts\deactivate.bat >nul 2>&1
 
 endlocal
+pause >nul
+endlocal
 goto :eof
 
 :error
@@ -83,4 +94,6 @@ echo.
 echo Build FAILED. See error messages above.
 call buildenv\Scripts\deactivate.bat >nul 2>&1
 endlocal
+pause >nul
+popd
 exit /b 1
