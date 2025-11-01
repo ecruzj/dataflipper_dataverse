@@ -28,8 +28,9 @@ def resource_path(relative_path):
         directory or _MEIPASS directory.
     :return: The absolute path to the resource.
     """
-    if hasattr(sys, '_MEIPASS'):
-        return os.path.join(sys._MEIPASS, relative_path)
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return os.path.join(meipass, relative_path)
     return os.path.join(os.path.abspath("."), relative_path)
 
 class MainWindow(QMainWindow):
@@ -59,7 +60,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
-        self.setWindowTitle(f"Data Flipper with Dataverse APIs — v{FULL_VERSION}")
+        self.setWindowTitle("Data Flipper with Dataverse APIs")
         self.setWindowIcon(QIcon(resource_path("resources/data_flipper_icon.ico")))
         self.ui.txtOutput.setReadOnly(True)
         self.ui.lblStatus.setText("")

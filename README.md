@@ -64,8 +64,8 @@ cd dataflipper_dataverse
 ### 2) Create a virtual environment & install dependencies (Windows PowerShell)
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+python -m venv buildenv
+.\buildenv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
@@ -114,6 +114,28 @@ Provide an `entity_mapping.xlsx` with columns:
 ---
 
 ## Run the app
+
+### Brave + ChromeDriver (Selenium)
+
+The app uses Brave (Chromium) with Selenium to download files from SharePoint.
+
+Brave is frequently updated; the ChromeDriver must match the major Chromium version.
+
+How we handle it (automatically):
+- Using `webdriver-manager`, we detect the Brave version (via `brave.exe --version`)
+
+and download the corresponding ChromeDriver (e.g., Chromium 142 → ChromeDriver 142.x).
+
+- If something goes wrong, Selenium Manager (Selenium ≥ 4.6) will attempt to resolve it.
+
+**If you see `SessionNotCreatedException`**
+Typical message: “This version of ChromeDriver only supports Chrome version 140. Current browser version is 142…”
+
+Solution:
+1) Update Brave, or
+2) Re-run the app (it will download the correct driver).
+
+> Requirements: `selenium>=4.6` and `webdriver-manager>=4.0.2`.
 
 ```powershell
 python main.py

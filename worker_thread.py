@@ -198,7 +198,7 @@ class WorkerThread(QThread):
         
         # 3) Export targets with URLs to Excel
         outfile = "output/targets.xlsx"
-        export_targets_to_excel(to_dicts(targets), outfile, entity_columns)
+        export_targets_to_excel(to_dicts(targets), outfile, list(entity_columns.keys()))
         
         # 4) Download (the method is responsible for resolving relative+sharepoint URLs if ensure_urls=True)
         resolver.download_sharepoint_documents(targets, ensure_urls=True)
