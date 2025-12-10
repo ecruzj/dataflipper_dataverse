@@ -4,6 +4,7 @@ from typing import Callable, Iterable, List, Dict, Any
 from dataverse_apis.core.automation.sharepoint.sharepoint_downloader import download_from_sharepoint, extract_related_zip
 from dataverse_apis.core.services.dataverse_client import call_dataverse
 from dataverse_apis.tasks.sharepoint_documents import build_sharepoint_folder_url, get_relativeurls_for_object_id
+from dataverse_apis.tasks.timeline_attachments_service import TimelineAttachmentsService
 
 # --- Simple and extensible model ---
 @dataclass
@@ -40,7 +41,7 @@ def to_dicts(items: Iterable[Target]) -> List[Dict[str, Any]]:
     return [asdict(t) for t in items]
 
 class RelatedDocumentsService:
-    def __init__(self, dv_call: Callable[[str], Dict[str, Any]] = call_dataverse,
+    def __init__(self, dv_call: Callable[..., Any] = call_dataverse,
                  logger: Callable[[str], None] | None = None,
                  relurl_resolver: Callable[[str], List[str]] = get_relativeurls_for_object_id,
                  sp_url_builder: Callable[[str, str], str] = build_sharepoint_folder_url,
@@ -60,7 +61,7 @@ class RelatedDocumentsService:
                 seen.add(x); out.append(x)
         return out
     
-    # 1) get object_id por entidad/ticket_number
+    # 1) get object_id by entidad/ticket_number
     def resolve_object_ids(self, targets: List[Target]) -> List[Target]:
         """Iterate targets and add .object_id based on the entity."""
         if not self.dv_call:
@@ -112,7 +113,7 @@ class RelatedDocumentsService:
                 items = result.get("value") or []
                 if items:
                     first = items[0]
-                    t.object_id = first.get(id_field) or first.get(id_field.lower())
+                    t.object_id = first.get(id_field) or (first.get(id_field.lower()) if id_field else None)
                     self.log(f"   ✓ {ent} {key} → {t.object_id}")
                 else:
                     t.object_id = None
@@ -219,3 +220,22 @@ class RelatedDocumentsService:
                         self.log(f"⋯ No ZIP found to extract for {ticket}")
                 except Exception as e:
                     self.log(f"❌ Error unzipping for {ticket}: {e}")
+                        
+    # 5) download timeline attachments for accounts
+    def get_timeline_attachments(self, targets):
+        svc = TimelineAttachmentsService()
+        total_notes = total_emails = 0
+
+        for t in targets:
+            if not t.object_id or not t.ticket_number:
+                self.log(f"-- {t.entity} {t.ticket_number}: missing ids for timeline.")
+                continue
+
+            counts = svc.download_into_ticket_folder(
+                record_id=t.object_id,
+                ticket_number=t.ticket_number
+            )
+            total_notes  += counts["notes"]
+            total_emails += counts["emails"]
+
+        self.log(f"notes: {total_notes}, emails: {total_emails}")

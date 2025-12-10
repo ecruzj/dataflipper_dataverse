@@ -25,7 +25,7 @@ common/build_info.py
 common/version_info.txt
 
 # ---- Sample / Test files ----
-test excel/
+test-excel/
 
 # ---- PyInstaller
 *.spec
@@ -44,3 +44,6 @@ Thumbs.db
 *.zip
 *.tar.gz
 *.rar
+
+# ---- build_info
+common/build_info.py
