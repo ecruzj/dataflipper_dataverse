@@ -191,15 +191,20 @@ class WorkerThread(QThread):
         # 2) Enrich with relative+sharepoint urls
         resolver = RelatedDocumentsService(logger=self.log_updated.emit)
         targets = to_targets(targets) # dicts -> dataclasses
-        # targets = resolver.enrich_with_sharepoint_urls(targets) # add object_id, relative_url, sharepoint_url        
+        # targets = resolver.build_sharepoint_urls(targets) # add object_id, relative_url, sharepoint_url        
         
-        # progreso: 1 paso por target + 1 para export a excel
+        # Progress: 1 step per target + 1 for export to Excel
         self._p_add(len(targets) + 1)
-        
-        # 3) Export targets with URLs to Excel
-        outfile = "output/targets.xlsx"
-        export_targets_to_excel(to_dicts(targets), outfile, list(entity_columns.keys()))
+                        
+        # 3) Build SharePoint URLs and object IDs
+        targets = resolver.build_sharepoint_urls(targets)
         
         # 4) Download (the method is responsible for resolving relative+sharepoint URLs if ensure_urls=True)
-        resolver.download_sharepoint_documents(targets, ensure_urls=True)
+        resolver.download_sharepoint_documents(targets, ensure_urls=False)
         
+        # 5) Get timeline attachments
+        resolver.get_timeline_attachments(targets)
+        
+        # 6) Export targets with URLs to Excel
+        outfile = "output/targets.xlsx"
+        export_targets_to_excel(to_dicts(targets), outfile, list(entity_columns.keys()))
