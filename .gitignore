@@ -44,3 +44,6 @@ Thumbs.db
 *.zip
 *.tar.gz
 *.rar
+
+# ---- build_info
+common/build_info.py
