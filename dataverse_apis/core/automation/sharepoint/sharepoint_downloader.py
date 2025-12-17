@@ -3,6 +3,7 @@ import time
 import glob
 import zipfile
 import sys
+import pandas as pd
 
 from shutil import which
 from ...services.runtime_paths import resolve_runtime_path
@@ -17,6 +18,9 @@ from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.edge.options import Options as EdgeOptions
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import NoSuchElementException, ElementNotInteractableException
+# --- Imports for explicit waits if the table takes a long time to load
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 log = get_logger(__name__)
 # ------------------------
@@ -257,6 +261,9 @@ def download_from_sharepoint(url, folder_name):
     run_base = _get_writable_base_dir()
     base_download_path = str((run_base / "downloads" / "temp").resolve())
     os.makedirs(base_download_path, exist_ok=True)
+    
+    final_folder = str((run_base / "downloads" / folder_name).resolve())
+    os.makedirs(final_folder, exist_ok=True)
 
     # Setup WebDriver
     driver = setup_driver(base_download_path)
@@ -294,6 +301,14 @@ def download_from_sharepoint(url, folder_name):
             os.remove(p)
         except OSError:
             pass
+        
+    ## ------- Process Metadata first -----
+        
+    # 1. Cambiar la vista a JC
+    switch_to_jc_view(driver)
+        
+    # Aprovechamos que el navegador ya está ahí viendo los archivos
+    scrape_and_save_metadata(driver, final_folder, folder_name, url)
 
     # Trigger download
     click_download_button(driver)
@@ -305,8 +320,8 @@ def download_from_sharepoint(url, folder_name):
         if downloaded_file:
             # Final folder and destination zip
             # final_folder = os.path.join(current_dir, "downloads", folder_name)
-            final_folder = str((run_base / "downloads" / folder_name).resolve())
-            os.makedirs(final_folder, exist_ok=True)
+            # final_folder = str((run_base / "downloads" / folder_name).resolve())
+            # os.makedirs(final_folder, exist_ok=True)
 
             desired_path = os.path.join(final_folder, "Related Documents.zip")
 
@@ -357,3 +372,149 @@ def extract_related_zip(folder_name: str, remove_zip: bool = True) -> bool:
     except Exception as e:
         log.error(f"Failed to extract ZIP for {folder_name}: {e}")
         return False
+    
+# Function to scrape the metadata of the SharePoint table
+def scrape_and_save_metadata(driver, save_folder, ticket_number, sharepoint_url):
+    """
+    Read the visible table (Ideally view JC), filter out junk and save Excel with URL included.
+    """
+    log.info(f"Attempting to extract metadata for {ticket_number}...")
+    metadata_rows = []
+
+    try:
+        wait = WebDriverWait(driver, 10)
+        # Wait for rows of data to be present
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-automationid^='row-']")))
+        
+        rows = driver.find_elements(By.CSS_SELECTOR, "div[data-automationid^='row-']")
+        print(f"   --> Processing {len(rows)} rows for metadata...")
+
+        for row in rows:
+            # FILTER 1: Ignore headers
+            row_id = row.get_attribute("data-automationid")
+            if row_id and "header" in row_id:
+                continue
+
+            # Initialize dictionary with fixed data
+            file_data = {
+                "Ticket Number": ticket_number,
+                "SharePoint URL": sharepoint_url
+            }
+            
+            # Search cells
+            cells = row.find_elements(By.CSS_SELECTOR, "div[data-automationid^='field-']")
+            
+            for cell in cells:
+                auto_id = cell.get_attribute("data-automationid") # Ej: field-LinkFilename
+                col_raw = auto_id.replace("field-", "") # Ej: LinkFilename
+                
+                text_val = cell.text.strip()
+                
+                # --- COLUMN MAPPING ---
+                if col_raw == "Title":
+                    file_data["Title"] = text_val
+                    
+                elif col_raw == "LinkFilename":
+                    file_data["File Name"] = text_val
+                    
+                elif col_raw == "Created":
+                    # Use title if available for full date
+                    file_data["Created"] = cell.get_attribute("title") or text_val
+                    
+                elif col_raw == "Modified":
+                    file_data["Modified"] = cell.get_attribute("title") or text_val
+                    
+                elif col_raw == "Editor":
+                    file_data["Modified By"] = text_val
+                    
+                elif col_raw == "Author":
+                    file_data["Created By"] = text_val
+                    
+                elif col_raw == "Date_x0020_Created": # Internal name of "Date Created"
+                    file_data["Date Created"] = text_val
+                    
+                # Internal name long for "Document Code"
+                elif "Document_x0020_Code" in col_raw:
+                    file_data["Document Code"] = text_val
+                    
+                # Internal name for "Document Type"
+                elif col_raw == "Document_x0020_Type":
+                    file_data["Document Type"] = text_val
+                    
+                elif col_raw == "FileSizeDisplay":
+                    file_data["File Size"] = text_val
+
+            # FILTER 2: Validate that it's a real row
+            fname = file_data.get("File Name", "")
+            if fname and fname != "Name": # "Name" is the visual header text
+                metadata_rows.append(file_data)
+        
+        # Generate Excel
+        if metadata_rows:
+            df = pd.DataFrame(metadata_rows)
+            
+            # Desired column order
+            cols_order = [
+                "Ticket Number", "SharePoint URL", "File Name", "Title", 
+                "Document Type", "Document Code", "File Size",
+                "Created", "Date Created", "Created By", 
+                "Modified", "Modified By"
+            ]
+            
+            # Reorder columns present in df
+            existing_cols = [c for c in cols_order if c in df.columns]
+            remaining = [c for c in df.columns if c not in existing_cols]
+            df = df[existing_cols + remaining]
+
+            excel_path = os.path.join(save_folder, f"Metadata_{ticket_number}.xlsx")
+            df.to_excel(excel_path, index=False)
+            log.info(f"✔ Metadata Excel saved (JC View): {excel_path}")
+            print(f"✔ Metadata Excel saved: {excel_path}")
+        else:
+            log.warning(f"Metadata extraction resulted in 0 valid rows for {ticket_number}")
+
+    except Exception as e:
+        log.error(f"❌ Failed to scrape metadata for {ticket_number}: {e}")
+        
+def switch_to_jc_view(driver, view_name="JC"):
+    """
+    Try changing the SharePoint view to 'JC' to reveal additional columns.
+    Fixed for role='menuitemcheckbox' and specific structure.
+    """
+    log.info(f"Switching SharePoint view to '{view_name}'...")
+    try:
+        wait = WebDriverWait(driver, 10)
+        
+        # 1. Find and click the view selector button
+        view_button = wait.until(EC.element_to_be_clickable(
+            (By.CSS_SELECTOR, "button[data-automationid='ViewAction']")
+        ))
+        view_button.click()
+        
+        # 2. Find the viewn_name option in the dropdown menu
+        # The HTML shows that the text "JC" is inside a span with class 'ms-ContextualMenu-itemText'
+        # We use normalize-space() to avoid issues with invisible whitespace
+        jc_text_element = wait.until(EC.element_to_be_clickable(
+            (By.XPATH, f"//span[contains(@class, 'ms-ContextualMenu-itemText') and normalize-space(text())='{view_name}']")
+        ))
+        
+        # We click. Selenium is usually smart enough to click the parent button.
+        # If the text is clicked, it clicks, but if it fails, the XPATH goes up to the button.
+        try:
+            jc_text_element.click()
+        except:
+            # Fallback: Attempt to click the container button if the span does not receive the click
+            parent_button = jc_text_element.find_element(By.XPATH, "./ancestor::button")
+            parent_button.click()
+
+        # 3. Wait for the grid to reload with the new columns
+        # Look for the 'Document Code' column which is exclusive to this view
+        wait.until(EC.presence_of_element_located(
+            (By.CSS_SELECTOR, "div[data-automationid*='Document_x0020_Code']")
+        ))
+
+        time.sleep(2) # Security pause for visual rendering
+        log.info(f"✔ Successfully switched to '{view_name}' view.")
+        
+    except Exception as e:
+        log.warning(f"⚠️ Could not switch to '{view_name}' view (continuing with default view). Error: {e}")
