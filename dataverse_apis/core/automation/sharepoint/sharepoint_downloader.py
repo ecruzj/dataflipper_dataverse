@@ -5,6 +5,7 @@ import zipfile
 import sys
 import pandas as pd
 
+from typing import Callable, Any 
 from shutil import which
 from ...services.runtime_paths import resolve_runtime_path
 from ...logging.logging_conf import get_logger
@@ -255,12 +256,18 @@ def merge_zip_into_existing(existing_zip_path: str, incoming_zip_path: str) -> d
 
     return {"added": added, "skipped": skipped}
 
-def download_from_sharepoint(url, folder_name, separate_excel=False):
+def download_from_sharepoint(url, folder_name, separate_excel=False, on_progress_step: Callable[[int], None] | None = None):
     """
     Download files and extract metadata.
     Return: list[dict] with the metadata extracted from this session.
     """
-    extracted_data = [] # Lista para retornar
+    extracted_data = [] # List to return
+
+    # Helper to report progress
+    def report_step(points):
+        if on_progress_step:
+            try: on_progress_step(points)
+            except: pass
     
     # Path setup
     run_base = _get_writable_base_dir()
@@ -279,79 +286,88 @@ def download_from_sharepoint(url, folder_name, separate_excel=False):
             "behavior": "allow",
             "downloadPath": base_download_path
         })
-    except Exception:
-        pass
 
-    driver.get(url)
-    time.sleep(5)
+        driver.get(url)
+        report_step(10) # Page loaded
+        time.sleep(5)
 
-    log.info(f"{folder_name} - Accessing SharePoint URL: {url}")
+        log.info(f"{folder_name} - Accessing SharePoint URL: {url}")
 
-    if not is_valid_url(driver):
-        print(f"Invalid URL or 'Page not found': {url}")
-        log.error(f"Invalid URL or 'Page not found': {url}")
-        driver.quit()
-        return
+        if not is_valid_url(driver):
+            print(f"Invalid URL or 'Page not found': {url}")
+            log.error(f"Invalid URL or 'Page not found': {url}")
+            driver.quit()
+            return
 
-    if is_empty_sharepoint_folder(driver):
-        print(f"No files in SharePoint folder: {folder_name}")
-        log.info(f"No files in SharePoint folder: {folder_name}")
-        driver.quit()
-        return
+        if is_empty_sharepoint_folder(driver):
+            print(f"No files in SharePoint folder: {folder_name}")
+            log.info(f"No files in SharePoint folder: {folder_name}")
+            driver.quit()
+            return
 
-    # Clean residue from previous downloads in temp (optional)
-    for p in glob.glob(os.path.join(base_download_path, "*")):
+        # Clean residue from previous downloads in temp (optional)
+        for p in glob.glob(os.path.join(base_download_path, "*")):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+            
+        ## ------- Process Metadata first -----
+            
+        # 1. Change view to JC
+        switch_to_jc_view(driver)
+        report_step(10) # View switched
+            
+        # 2. Extract metadata
+        extracted_data = scrape_metadata(driver, folder_name, url)
+        report_step(20) # Metadata extracted
+        
+        # 3. Save individual metadata if separate_excel is True
+        if separate_excel and extracted_data:
+            excel_path = os.path.join(final_folder, f"Metadata_{folder_name}.xlsx")
+            save_metadata_to_excel(extracted_data, excel_path)
+
+        # Trigger download
+        click_download_button(driver)
+        report_step(10) # Download triggered
+
+        # Wait indefinitely until the ZIP is complete
         try:
-            os.remove(p)
-        except OSError:
-            pass
-        
-    ## ------- Process Metadata first -----
-        
-    # 1. Change view to JC
-    switch_to_jc_view(driver)
-        
-    # 2. Extract metadata
-    extracted_data = scrape_metadata(driver, folder_name, url)
-    
-    # 3. Save individual metadata if separate_excel is True
-    if separate_excel and extracted_data:
-        excel_path = os.path.join(final_folder, f"Metadata_{folder_name}.xlsx")
-        save_metadata_to_excel(extracted_data, excel_path)
+            downloaded_file = wait_for_download(base_download_path, stable_for=8.0, poll=1.0)
+            
+            report_step(40) # Download complete (this is heavy)
 
-    # Trigger download
-    click_download_button(driver)
+            if downloaded_file:
+                desired_path = os.path.join(final_folder, "Related Documents.zip")
 
-    # Wait indefinitely until the ZIP is complete
-    try:
-        downloaded_file = wait_for_download(base_download_path, stable_for=8.0, poll=1.0)
-
-        if downloaded_file:
-            desired_path = os.path.join(final_folder, "Related Documents.zip")
-
-            if os.path.exists(desired_path):
-                # Zip already exists -> merge contents and delete the new one
-                summary = merge_zip_into_existing(desired_path, downloaded_file)
-                msg = (f"Merged into existing ZIP: {desired_path} | "
-                    f"Added: {summary['added']} | Skipped duplicates: {summary['skipped']}")
-                print(msg)
-                log.info(msg)
-                try:
-                    os.remove(downloaded_file)
-                except OSError:
-                    pass
+                if os.path.exists(desired_path):
+                    # Zip already exists -> merge contents and delete the new one
+                    summary = merge_zip_into_existing(desired_path, downloaded_file)
+                    msg = (f"Merged into existing ZIP: {desired_path} | "
+                        f"Added: {summary['added']} | Skipped duplicates: {summary['skipped']}")
+                    print(msg)
+                    log.info(msg)
+                    try:
+                        os.remove(downloaded_file)
+                    except OSError:
+                        pass
+                else:
+                    # Does not exist -> move/rename
+                    os.replace(downloaded_file, desired_path)
+                    print(f"Download complete and moved to: {desired_path}")
+                    log.info(f"Download complete and moved to: {desired_path}")
             else:
-                # Does not exist -> move/rename
-                os.replace(downloaded_file, desired_path)
-                print(f"Download complete and moved to: {desired_path}")
-                log.info(f"Download complete and moved to: {desired_path}")
-        else:
-            # In theory, we shouldn't get here because we're waiting indefinitely,
-            # but we're leaving it for safety.
-            print(f"Download did not complete for: {folder_name}")
-            log.error(f"Download did not complete for: {folder_name}")
-    finally:
-        driver.quit()
+                # In theory, we shouldn't get here because we're waiting indefinitely,
+                # but we're leaving it for safety.
+                print(f"Download did not complete for: {folder_name}")
+                log.error(f"Download did not complete for: {folder_name}")
+        finally:
+            driver.quit()
+            report_step(10) # Cleanup and finish
+            
+    except Exception as e:
+        log.error(f"Critical error: {e}")
+        if 'driver' in locals(): driver.quit()
     return extracted_data # return extracted metadata
         
 def extract_related_zip(folder_name: str, remove_zip: bool = True) -> bool:
