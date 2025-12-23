@@ -1,7 +1,8 @@
 from __future__ import annotations
+import os
 from dataclasses import dataclass, asdict, field
 from typing import Callable, Iterable, List, Dict, Any
-from dataverse_apis.core.automation.sharepoint.sharepoint_downloader import download_from_sharepoint, extract_related_zip
+from dataverse_apis.core.automation.sharepoint.sharepoint_downloader import download_from_sharepoint, extract_related_zip, save_metadata_to_excel
 from dataverse_apis.core.services.dataverse_client import call_dataverse
 from dataverse_apis.tasks.sharepoint_documents import build_sharepoint_folder_url, get_relativeurls_for_object_id
 from dataverse_apis.tasks.timeline_attachments_service import TimelineAttachmentsService
@@ -45,7 +46,7 @@ class RelatedDocumentsService:
                  logger: Callable[[str], None] | None = None,
                  relurl_resolver: Callable[[str], List[str]] = get_relativeurls_for_object_id,
                  sp_url_builder: Callable[[str, str], str] = build_sharepoint_folder_url,
-                 sp_downloader: Callable[[str, str], Any] = download_from_sharepoint) -> None:
+                 sp_downloader: Callable[[str, str, bool], Any] = download_from_sharepoint) -> None:
         self.dv_call = dv_call
         self.log = logger or (lambda msg: None)
         self.relurl_resolver = relurl_resolver
@@ -180,6 +181,7 @@ class RelatedDocumentsService:
         ensure_urls: bool = True,
         stop_on_error: bool = False,
         unzip_after: bool = True,
+        separate_excel: bool = False
     ) -> None:
         """
         Download the content of each URL in sharepoint_urls using sp_downloader(url, ticket_number).
@@ -192,6 +194,9 @@ class RelatedDocumentsService:
             
         processed_tickets: set[str] = set()
 
+        # Master List for combined metadata
+        all_combined_metadata: List[Dict] = [] 
+
         for t in targets:
             if not t.object_id:
                 self.log(f"⋯ {t.entity} {t.ticket_number}: without object_id — skip download.")
@@ -203,12 +208,30 @@ class RelatedDocumentsService:
             for url in t.sharepoint_urls:
                 try:
                     self.log(f"↓ Downloading: {t.entity} {t.ticket_number} ← {url}")
-                    self.sp_downloader(url, t.ticket_number)
+                    metadata_result = self.sp_downloader(url, t.ticket_number, separate_excel)
+                    
+                    if metadata_result:
+                        all_combined_metadata.extend(metadata_result)
+                    
                     processed_tickets.add(t.ticket_number)
                 except Exception as e:
                     self.log(f"❌ Error downloading ({t.entity} {t.ticket_number}): {e}")
                     if stop_on_error:
                         raise
+                    
+        # --- Save Combined Excel if separate_excel is False ---
+        if not separate_excel and all_combined_metadata:
+            try:
+                output_folder = "downloads" # O puedes usar "downloads"
+                os.makedirs(output_folder, exist_ok=True)
+                
+                combined_path = os.path.join(output_folder, "Global_SharePoint_Metadata.xlsx")
+                
+                self.log(f"📊 Saving combined metadata to {combined_path}...")
+                save_metadata_to_excel(all_combined_metadata, combined_path)
+                
+            except Exception as e:
+                self.log(f"❌ Error saving combined Excel: {e}")
                     
         # --- Post-process: unzip and delete ZIP ---
         if unzip_after and processed_tickets:

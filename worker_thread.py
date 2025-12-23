@@ -200,7 +200,7 @@ class WorkerThread(QThread):
         targets = resolver.build_sharepoint_urls(targets)
         
         # 4) Download (the method is responsible for resolving relative+sharepoint URLs if ensure_urls=True)
-        resolver.download_sharepoint_documents(targets, ensure_urls=False)
+        resolver.download_sharepoint_documents(targets, ensure_urls=False, separate_excel=False)
         
         # 5) Get timeline attachments
         resolver.get_timeline_attachments(targets)
