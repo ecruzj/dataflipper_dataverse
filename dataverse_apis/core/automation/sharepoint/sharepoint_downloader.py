@@ -255,9 +255,14 @@ def merge_zip_into_existing(existing_zip_path: str, incoming_zip_path: str) -> d
 
     return {"added": added, "skipped": skipped}
 
-def download_from_sharepoint(url, folder_name):
-    # Temp path for downloading (shared for all iterations)
-    # base_download_path = os.path.join(current_dir, "downloads", "temp")
+def download_from_sharepoint(url, folder_name, separate_excel=False):
+    """
+    Download files and extract metadata.
+    Return: list[dict] with the metadata extracted from this session.
+    """
+    extracted_data = [] # Lista para retornar
+    
+    # Path setup
     run_base = _get_writable_base_dir()
     base_download_path = str((run_base / "downloads" / "temp").resolve())
     os.makedirs(base_download_path, exist_ok=True)
@@ -268,7 +273,6 @@ def download_from_sharepoint(url, folder_name):
     # Setup WebDriver
     driver = setup_driver(base_download_path)
 
-    # (Optional but recommended in modern headless Chrome/Edge)
     # Allow headless downloads:
     try:
         driver.execute_cdp_cmd("Page.setDownloadBehavior", {
@@ -304,11 +308,16 @@ def download_from_sharepoint(url, folder_name):
         
     ## ------- Process Metadata first -----
         
-    # 1. Cambiar la vista a JC
+    # 1. Change view to JC
     switch_to_jc_view(driver)
         
-    # Aprovechamos que el navegador ya está ahí viendo los archivos
-    scrape_and_save_metadata(driver, final_folder, folder_name, url)
+    # 2. Extract metadata
+    extracted_data = scrape_metadata(driver, folder_name, url)
+    
+    # 3. Save individual metadata if separate_excel is True
+    if separate_excel and extracted_data:
+        excel_path = os.path.join(final_folder, f"Metadata_{folder_name}.xlsx")
+        save_metadata_to_excel(extracted_data, excel_path)
 
     # Trigger download
     click_download_button(driver)
@@ -318,11 +327,6 @@ def download_from_sharepoint(url, folder_name):
         downloaded_file = wait_for_download(base_download_path, stable_for=8.0, poll=1.0)
 
         if downloaded_file:
-            # Final folder and destination zip
-            # final_folder = os.path.join(current_dir, "downloads", folder_name)
-            # final_folder = str((run_base / "downloads" / folder_name).resolve())
-            # os.makedirs(final_folder, exist_ok=True)
-
             desired_path = os.path.join(final_folder, "Related Documents.zip")
 
             if os.path.exists(desired_path):
@@ -348,6 +352,7 @@ def download_from_sharepoint(url, folder_name):
             log.error(f"Download did not complete for: {folder_name}")
     finally:
         driver.quit()
+    return extracted_data # return extracted metadata
         
 def extract_related_zip(folder_name: str, remove_zip: bool = True) -> bool:
     """
@@ -372,109 +377,88 @@ def extract_related_zip(folder_name: str, remove_zip: bool = True) -> bool:
     except Exception as e:
         log.error(f"Failed to extract ZIP for {folder_name}: {e}")
         return False
-    
-# Function to scrape the metadata of the SharePoint table
-def scrape_and_save_metadata(driver, save_folder, ticket_number, sharepoint_url):
+
+def save_metadata_to_excel(metadata_rows, save_path):
     """
-    Read the visible table (Ideally view JC), filter out junk and save Excel with URL included.
+    Receives a list of dictionaries and saves the Excel with the standard format.
+    """
+    if not metadata_rows:
+        return
+
+    try:
+        df = pd.DataFrame(metadata_rows)
+
+        # Desired order of columns
+        cols_order = [
+            "Ticket Number", "SharePoint URL", "File Name", "Title", 
+            "Document Type", "Document Code", "File Size",
+            "Created", "Date Created", "Created By", 
+            "Modified", "Modified By"
+        ]
+
+        # Reorder columns present in df
+        existing_cols = [c for c in cols_order if c in df.columns]
+        remaining = [c for c in df.columns if c not in existing_cols]
+        df = df[existing_cols + remaining]
+
+        df.to_excel(save_path, index=False)
+        log.info(f"✔ Metadata Excel saved: {save_path}")
+        print(f"✔ Metadata Excel saved: {save_path}")
+    except Exception as e:
+        log.error(f"❌ Failed to save Excel to {save_path}: {e}")
+        
+def scrape_metadata(driver, ticket_number, sharepoint_url):
+    """
+    Reads the visible table (JC View) and returns a list of dictionaries.
     """
     log.info(f"Attempting to extract metadata for {ticket_number}...")
     metadata_rows = []
 
     try:
         wait = WebDriverWait(driver, 10)
-        # Wait for rows of data to be present
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-automationid^='row-']")))
         
-        rows = driver.find_elements(By.CSS_SELECTOR, "div[data-automationid^='row-']")
-        print(f"   --> Processing {len(rows)} rows for metadata...")
-
+        rows = driver.find_elements(By.CSS_SELECTOR, "div[data-automationid^='row-']")        
         for row in rows:
             # FILTER 1: Ignore headers
             row_id = row.get_attribute("data-automationid")
             if row_id and "header" in row_id:
                 continue
 
-            # Initialize dictionary with fixed data
             file_data = {
                 "Ticket Number": ticket_number,
                 "SharePoint URL": sharepoint_url
             }
             
-            # Search cells
             cells = row.find_elements(By.CSS_SELECTOR, "div[data-automationid^='field-']")
             
             for cell in cells:
-                auto_id = cell.get_attribute("data-automationid") # Ej: field-LinkFilename
-                col_raw = auto_id.replace("field-", "") # Ej: LinkFilename
-                
+                auto_id = cell.get_attribute("data-automationid") 
+                col_raw = auto_id.replace("field-", "") 
                 text_val = cell.text.strip()
                 
                 # --- COLUMN MAPPING ---
-                if col_raw == "Title":
-                    file_data["Title"] = text_val
-                    
-                elif col_raw == "LinkFilename":
-                    file_data["File Name"] = text_val
-                    
-                elif col_raw == "Created":
-                    # Use title if available for full date
-                    file_data["Created"] = cell.get_attribute("title") or text_val
-                    
-                elif col_raw == "Modified":
-                    file_data["Modified"] = cell.get_attribute("title") or text_val
-                    
-                elif col_raw == "Editor":
-                    file_data["Modified By"] = text_val
-                    
-                elif col_raw == "Author":
-                    file_data["Created By"] = text_val
-                    
-                elif col_raw == "Date_x0020_Created": # Internal name of "Date Created"
-                    file_data["Date Created"] = text_val
-                    
-                # Internal name long for "Document Code"
-                elif "Document_x0020_Code" in col_raw:
-                    file_data["Document Code"] = text_val
-                    
-                # Internal name for "Document Type"
-                elif col_raw == "Document_x0020_Type":
-                    file_data["Document Type"] = text_val
-                    
-                elif col_raw == "FileSizeDisplay":
-                    file_data["File Size"] = text_val
+                if col_raw == "Title": file_data["Title"] = text_val
+                elif col_raw == "LinkFilename": file_data["File Name"] = text_val
+                elif col_raw == "Created": file_data["Created"] = cell.get_attribute("title") or text_val
+                elif col_raw == "Modified": file_data["Modified"] = cell.get_attribute("title") or text_val
+                elif col_raw == "Editor": file_data["Modified By"] = text_val
+                elif col_raw == "Author": file_data["Created By"] = text_val
+                elif col_raw == "Date_x0020_Created": file_data["Date Created"] = text_val
+                elif "Document_x0020_Code" in col_raw: file_data["Document Code"] = text_val
+                elif col_raw == "Document_x0020_Type": file_data["Document Type"] = text_val
+                elif col_raw == "FileSizeDisplay": file_data["File Size"] = text_val
 
-            # FILTER 2: Validate that it's a real row
+            # FILTER 2: Validate row
             fname = file_data.get("File Name", "")
-            if fname and fname != "Name": # "Name" is the visual header text
+            if fname and fname != "Name": 
                 metadata_rows.append(file_data)
         
-        # Generate Excel
-        if metadata_rows:
-            df = pd.DataFrame(metadata_rows)
-            
-            # Desired column order
-            cols_order = [
-                "Ticket Number", "SharePoint URL", "File Name", "Title", 
-                "Document Type", "Document Code", "File Size",
-                "Created", "Date Created", "Created By", 
-                "Modified", "Modified By"
-            ]
-            
-            # Reorder columns present in df
-            existing_cols = [c for c in cols_order if c in df.columns]
-            remaining = [c for c in df.columns if c not in existing_cols]
-            df = df[existing_cols + remaining]
-
-            excel_path = os.path.join(save_folder, f"Metadata_{ticket_number}.xlsx")
-            df.to_excel(excel_path, index=False)
-            log.info(f"✔ Metadata Excel saved (JC View): {excel_path}")
-            print(f"✔ Metadata Excel saved: {excel_path}")
-        else:
-            log.warning(f"Metadata extraction resulted in 0 valid rows for {ticket_number}")
+        return metadata_rows
 
     except Exception as e:
         log.error(f"❌ Failed to scrape metadata for {ticket_number}: {e}")
+        return []
         
 def switch_to_jc_view(driver, view_name="JC"):
     """
