@@ -12,6 +12,16 @@ from logic.pdf_generator import (
 )
 from logic.related_documents_service import RelatedDocumentsService, to_targets, to_dicts
 
+# --- DEFINITION OF WEIGHTS (COSTS) ---
+# COST_PREPARE_TARGET = 1     # cost by identifying a target
+COST_BUILD_URL = 1          # Local logic (fast)
+COST_RESOLVE_ID = 5         # Call to Dataverse to resolve ID
+COST_RESOLVE_URL = 5        # Call to Dataverse to resolve relative URL
+COST_TIMELINE = 20          # cost by timeline attachments
+COST_TRANSPOSE_SHEET = 50   # cost by excel sheet transposed
+COST_FINAL_EXPORT = 50      # cost by generating PDF/Excel final
+COST_DOWNLOAD_SP = 100      # cost by downloading full (Nav+Meta+DL)
+
 class WorkerThread(QThread):
     progress_updated = Signal(int)
     log_updated = Signal(str)
@@ -42,19 +52,52 @@ class WorkerThread(QThread):
         ok = True
         try:
             os.makedirs(self.output_dir, exist_ok=True)
+            
+            # 1. Read Excel files
             excel_files = self._read_excel_files()
+            
+            # 2. estimate total steps
+            total_sheets = sum(len(sheets) for _, sheets in excel_files)
+            total_tickets = 0
+            targets_precalculed = []
+            
+            if self._should_get_docs():
+                entity_columns = load_entity_columns_map(self)
+                if entity_columns:
+                    # this function is fast, it only reads cells in memory
+                    targets_precalculed = collect_targets_from_excels(self, excel_files, entity_columns)
+                    total_tickets = len(targets_precalculed)
+                    
+            # 3 calculate total points
+            total_points = 0
+            
+            if self._should_transpose():
+                total_points += (total_sheets * COST_TRANSPOSE_SHEET)
+                total_points += COST_FINAL_EXPORT # Generate combined PDF / per-excel PDFs
+                
+            if self._should_get_docs():
+                total_points += (total_tickets * COST_RESOLVE_ID)
+                total_points += (total_tickets * COST_RESOLVE_URL)
+                total_points += (total_tickets * COST_BUILD_URL)
+                total_points += (total_tickets * COST_DOWNLOAD_SP)
+                total_points += (total_tickets * COST_TIMELINE)
+                total_points += COST_FINAL_EXPORT # Excel targets
 
+            # Initialize progress bar with total points
+            self._p_init(total_points)
+            self.log_updated.emit(f"📊 Planning: {total_sheets} Sheets, {total_tickets} Tickets. Total Points: {total_points}")
+            
+            # 4. Execute flows
             if self._should_transpose():
                 self._transpose_flow(excel_files)
 
             if self._should_get_docs():
-                self._related_documents_flow(excel_files)
+                self._related_documents_flow(targets_precalculed)
+
 
         except Exception as e:
             self._log_error("Unexpected error", e)
             ok = False
-
-        self.finished.emit(ok and not self.errors, self.errors)
         
         # always close at 100%
         self._p_finish()
@@ -86,13 +129,10 @@ class WorkerThread(QThread):
         self._p_done = 0
         self.progress_updated.emit(0)
 
-    def _p_add(self, extra_steps: int):
-        # allows you to add steps dynamically (e.g. after knowing #urls)
-        if extra_steps > 0:
-            self._p_total += int(extra_steps)
-
-    def _p_step(self, n: int = 1):
-        self._p_done += n
+    def _p_step(self, points: int = 1):
+        """Advance the bar N points"""
+        self._p_done += points
+        # Calculate percentage
         pct = int(min(99, (self._p_done / self._p_total) * 100))
         self.progress_updated.emit(pct)
 
@@ -100,23 +140,7 @@ class WorkerThread(QThread):
         self.progress_updated.emit(100)
         
     # ------------------------ Transpose / PDF flow --------------------
-    def _transpose_flow(self, excel_files):
-        # calculate static steps (2 per sheet with data: process + export/enqueue)
-        total_tasks = 0
-        for _, sheets in excel_files:
-            for df in sheets.values():
-                if df is not None and getattr(df, "empty", False) is False:
-                    total_tasks += 2
-
-        # final steps according to mode
-        extra_steps = 0
-        if self.export_mode == "combined":
-            extra_steps = 2  # pre + generate combined
-        elif self.export_mode == "per_excel":
-            extra_steps = sum(1 for _, sheets in excel_files if sheets)  # 1 por archivo
-
-        self._p_add(total_tasks + extra_steps)
-        
+    def _transpose_flow(self, excel_files):        
         combined_data = []         # [(title, df_transposed), ...]
         excel_file_data = []       # [(filename, [(sheet, df_transposed), ...])]
 
@@ -129,7 +153,8 @@ class WorkerThread(QThread):
                     self.log_updated.emit(f"📄 Processing: {filename} - Sheet: {sheet_name}")
                     transposed = transpose_row_by_row(df)
                     self._collect_export_units(filename, sheet_name, transposed, combined_data, file_entry)
-                    self._p_step(2)  # processing + export/gluing
+                    
+                    self._p_step(COST_TRANSPOSE_SHEET)  # processing + export/gluing
                     self.log_updated.emit(f"✔ Done: {filename} - {sheet_name}\n")
                 except Exception as e:
                     self._log_error(f"Error in {filename} - {sheet_name}", e)
@@ -138,6 +163,7 @@ class WorkerThread(QThread):
                 excel_file_data.append(file_entry)
 
         self._final_exports(combined_data, excel_file_data)
+        self._p_step(COST_FINAL_EXPORT)  # final export step
                 
     def _collect_export_units(self, filename, sheet_name, df_transposed, combined_data, file_entry):
         """Decide what to do with each sheet based on the export_mode."""
@@ -171,40 +197,41 @@ class WorkerThread(QThread):
         except Exception as e:
             self._log_error("Final export error", e)
                         
-    # ---------------------- Related documents flow ------------------------    
-    def _related_documents_flow(self, excel_files):
+    # ---------------------- Related documents flow ------------------------
+    def _related_documents_flow(self, targets):
         """
         Builds a unique list per entity with the "ticket number" read
         from Excel files whose filename matches the entity.
         """
-        entity_columns = load_entity_columns_map(self)
-        if not entity_columns:
-            return
-
-        # 1) Build targets list
-        targets = collect_targets_from_excels(self, excel_files, entity_columns)
-        
         if not targets:
-            self.log_updated.emit("⚠️ No matching entities/tickets found para SharePoint.")
+            self.log_updated.emit("⚠️ No targets to process.")
             return
 
-        # 2) Enrich with relative+sharepoint urls
-        resolver = RelatedDocumentsService(logger=self.log_updated.emit)
-        targets = to_targets(targets) # dicts -> dataclasses
-        # targets = resolver.build_sharepoint_urls(targets) # add object_id, relative_url, sharepoint_url        
+        # Instantiate service with the point stepper
+        resolver = RelatedDocumentsService(
+            logger=self.log_updated.emit,
+            progress_stepper=self._p_step
+        )
         
-        # Progress: 1 step per target + 1 for export to Excel
-        self._p_add(len(targets) + 1)
-                        
-        # 3) Build SharePoint URLs and object IDs
+        targets = to_targets(targets)
+        
+        # 1. Build URLs and object IDs (Consume COST_PREPARE_TARGET per ticket)
         targets = resolver.build_sharepoint_urls(targets)
         
-        # 4) Download (the method is responsible for resolving relative+sharepoint URLs if ensure_urls=True)
+        # 2. Download documents (Consume COST_DOWNLOAD_SP per ticket)
         resolver.download_sharepoint_documents(targets, ensure_urls=False, separate_excel=False)
         
-        # 5) Get timeline attachments
+        # 3. Timeline attachments (Consume COST_TIMELINE per ticket)
         resolver.get_timeline_attachments(targets)
         
-        # 6) Export targets with URLs to Excel
+        # 4. Export Excel with targets
         outfile = "output/targets.xlsx"
-        export_targets_to_excel(to_dicts(targets), outfile, list(entity_columns.keys()))
+        
+        # 5. Export targets to Excel
+        self.log_updated.emit("📄 Exporting targets to Excel...")
+        # Load entity columns to export
+        entity_columns = load_entity_columns_map(self) 
+        if entity_columns:
+            export_targets_to_excel(to_dicts(targets), outfile, list(entity_columns.keys()))
+        
+        self._p_step(COST_FINAL_EXPORT)  # final export step

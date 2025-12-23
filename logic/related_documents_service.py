@@ -46,12 +46,14 @@ class RelatedDocumentsService:
                  logger: Callable[[str], None] | None = None,
                  relurl_resolver: Callable[[str], List[str]] = get_relativeurls_for_object_id,
                  sp_url_builder: Callable[[str, str], str] = build_sharepoint_folder_url,
-                 sp_downloader: Callable[[str, str, bool], Any] = download_from_sharepoint) -> None:
+                 sp_downloader: Callable[..., Any] = download_from_sharepoint,
+                 progress_stepper: Callable[[int], None] | None = None) -> None:
         self.dv_call = dv_call
         self.log = logger or (lambda msg: None)
         self.relurl_resolver = relurl_resolver
         self.sp_url_builder = sp_url_builder
         self.sp_downloader = sp_downloader
+        self.progress_stepper = progress_stepper or (lambda step: None)
         
      # ————— helpers —————
     @staticmethod
@@ -94,6 +96,8 @@ class RelatedDocumentsService:
             return (None, None)
     
         for t in targets:
+            self.progress_stepper(5) # COST_RESOLVE_ID
+            
             ent = (t.entity or "").lower() ## error here
             key = (t.ticket_number or "").strip()
 
@@ -131,6 +135,8 @@ class RelatedDocumentsService:
             raise RuntimeError("No relurl_resolver set to ObjectIdResolver.")
 
         for t in targets:
+            self.progress_stepper(5) # COST_RESOLVE_URL
+            
             try:
                 if not t.object_id:
                     self.log(f"⋯ {t.entity} {t.ticket_number}: without object_id — I skip resolving relative_urls.")
@@ -160,6 +166,8 @@ class RelatedDocumentsService:
         self.resolve_relative_urls(targets)
         
         for t in targets:
+            self.progress_stepper(1) # COST_BUILD_URL
+            
             if not t.relative_urls:
                 t.sharepoint_urls = []
                 continue
@@ -198,17 +206,20 @@ class RelatedDocumentsService:
         all_combined_metadata: List[Dict] = [] 
 
         for t in targets:
+            self.progress_stepper(1)  # Indicate progress
             if not t.object_id:
+                self.progress_stepper(100)  # Skip progress for this target
                 self.log(f"⋯ {t.entity} {t.ticket_number}: without object_id — skip download.")
                 continue
             if not t.sharepoint_urls:
+                self.progress_stepper(100)  # Skip progress for this target
                 self.log(f"⋯ {t.entity} {t.ticket_number}: no sharepoint_urls — nothing to download.")
                 continue
 
             for url in t.sharepoint_urls:
                 try:
                     self.log(f"↓ Downloading: {t.entity} {t.ticket_number} ← {url}")
-                    metadata_result = self.sp_downloader(url, t.ticket_number, separate_excel)
+                    metadata_result = self.sp_downloader(url, t.ticket_number, separate_excel, on_progress_step=self.progress_stepper)
                     
                     if metadata_result:
                         all_combined_metadata.extend(metadata_result)
@@ -216,6 +227,7 @@ class RelatedDocumentsService:
                     processed_tickets.add(t.ticket_number)
                 except Exception as e:
                     self.log(f"❌ Error downloading ({t.entity} {t.ticket_number}): {e}")
+                    self.progress_stepper(100)  # Complete progress for this target
                     if stop_on_error:
                         raise
                     
@@ -243,6 +255,9 @@ class RelatedDocumentsService:
                         self.log(f"⋯ No ZIP found to extract for {ticket}")
                 except Exception as e:
                     self.log(f"❌ Error unzipping for {ticket}: {e}")
+                    
+        if processed_tickets:
+             self.progress_stepper(10)  # Final progress step
                         
     # 5) download timeline attachments for accounts
     def get_timeline_attachments(self, targets):
@@ -250,6 +265,7 @@ class RelatedDocumentsService:
         total_notes = total_emails = 0
 
         for t in targets:
+            self.progress_stepper(20)  # Indicate progress for timeline attachments
             if not t.object_id or not t.ticket_number:
                 self.log(f"-- {t.entity} {t.ticket_number}: missing ids for timeline.")
                 continue
